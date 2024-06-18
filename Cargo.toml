@@ -1,0 +1,57 @@
+[package]
+name = "f7disco-home"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+embassy-stm32 = { git = "https://github.com/embassy-rs/embassy", branch = "main", features = [
+    "defmt",
+    "stm32f746ng",
+    "memory-x",
+    "unstable-pac",
+    "time-driver-any",
+    "exti",
+] }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy", branch = "main", version = "0.6.0", features = [
+    "defmt",
+] }
+embassy-executor = { git = "https://github.com/embassy-rs/embassy", branch = "main", version = "0.5.0", features = [
+    "task-arena-size-32768",
+    "arch-cortex-m",
+    "executor-thread",
+    "defmt",
+    "integrated-timers",
+] }
+embassy-time = { git = "https://github.com/embassy-rs/embassy", branch = "main", version = "0.3.1", features = [
+    "defmt",
+    "defmt-timestamp-uptime",
+    "tick-hz-32_768",
+] }
+embassy-net = { git = "https://github.com/embassy-rs/embassy", branch = "main", version = "0.4.0", features = [
+    "defmt",
+    "tcp",
+    "dhcpv4",
+    "medium-ethernet",
+] }
+embedded-io-async = { version = "0.6.1" }
+embassy-usb = { git = "https://github.com/embassy-rs/embassy", branch = "main", version = "0.2.0", features = [
+    "defmt",
+] }
+embassy-futures = { git = "https://github.com/embassy-rs/embassy", branch = "main", version = "0.1.0" }
+
+defmt = "0.3"
+defmt-rtt = "0.4"
+
+cortex-m = { version = "0.7.6", features = [
+    "inline-asm",
+    "critical-section-single-core",
+] }
+cortex-m-rt = "0.7.0"
+embedded-hal = "1.0.0"
+panic-probe = { version = "0.3", features = ["print-defmt"] }
+critical-section = "1.1.2"
+stm32-fmc = "0.3.0"
+
+[profile.release]
+debug = 2
+lto = "fat"
