@@ -1,6 +1,11 @@
 #![no_std]
 #![no_main]
 
+mod display_target;
+mod progress_bar;
+mod sdram_drv;
+
+use alloc::boxed::Box;
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_stm32::fmc::Fmc;
@@ -15,9 +20,25 @@ use embassy_stm32::pac::RCC;
 use embassy_stm32::time::mhz;
 use embassy_time::Timer;
 
-use {defmt_rtt as _, panic_probe as _};
+extern crate alloc;
+use embedded_alloc::TlsfHeap as Heap;
 
-static FERRIS_IMAGE: &[u8; 480 * 272 * 3] = include_bytes!("image.bin");
+#[global_allocator]
+static HEAP: Heap = Heap::empty();
+
+use embedded_graphics::geometry::{Dimensions, Point, Size};
+use embedded_graphics::mono_font::iso_8859_14::FONT_10X20;
+use embedded_graphics::mono_font::MonoTextStyle;
+use embedded_graphics::pixelcolor::{Rgb888, RgbColor};
+use embedded_graphics::primitives::{Circle, Primitive, PrimitiveStyle, Triangle};
+use embedded_graphics::text::Text;
+use embedded_graphics::Drawable;
+use embedded_layout::align::{horizontal, vertical, Align};
+use embedded_layout::layout::linear::LinearLayout;
+use embedded_layout::object_chain::Chain;
+use progress_bar::ProgressBar;
+
+use {defmt_rtt as _, panic_probe as _};
 
 #[embassy_executor::task()]
 async fn display_task() -> ! {
@@ -33,7 +54,7 @@ async fn display_task() -> ! {
     const WINDOW_X1: u16 = LCD_X_SIZE; // 480 for ferris
     const WINDOW_Y0: u16 = 0;
     const WINDOW_Y1: u16 = LCD_Y_SIZE; // 800 for ferris
-    const PIXEL_FORMAT: Pf = Pf::RGB888;
+    const PIXEL_FORMAT: Pf = Pf::ARGB8888;
     //const FBStartAdress: u16 = FB_Address;
     const ALPHA: u8 = 255;
     const ALPHA0: u8 = 0;
@@ -82,15 +103,18 @@ async fn display_task() -> ! {
         w.set_bf2(Bf2::CONSTANT);
     });
 
-    // Configure the color frame buffer start address
-    let fb_start_address: u32 = &FERRIS_IMAGE[0] as *const _ as u32;
+    // Allocate a buffer for the display on the heap
+    const DISPLAY_BUFFER_SIZE: usize = LCD_X_SIZE as usize * LCD_Y_SIZE as usize;
+    let mut display_buffer = Box::<[u32; DISPLAY_BUFFER_SIZE]>::new([0; DISPLAY_BUFFER_SIZE]);
+
     info!(
-        "Setting Framebuffer Start Address: {:010x}",
-        fb_start_address
+        "Display buffer allocated at {:x}",
+        &display_buffer[0] as *const _
     );
+
     LTDC.layer(0)
         .cfbar()
-        .write(|w| w.set_cfbadd(fb_start_address));
+        .write(|w| w.set_cfbadd(&display_buffer[0] as *const _ as u32));
 
     // Configures the color frame buffer pitch in byte
     LTDC.layer(0).cfblr().write(|w| {
@@ -109,7 +133,103 @@ async fn display_task() -> ! {
     //LTDC->SRCR = LTDC_SRCR_IMR;
     LTDC.srcr().modify(|w| w.set_imr(Imr::RELOAD));
 
+    // Delay for 1s
+    Timer::after_millis(1000).await;
+
+    // Test memory
+    let mut boxed_int = Box::new(0xdeadbeefu32);
+
+    info!("Boxed int at {:x}", &*boxed_int as *const _);
+    info!("Boxed value: {:x}", *boxed_int);
+
+    *boxed_int += 1;
+
+    info!("Boxed value: {:x}", *boxed_int);
+
+    // Create a display buffer
+    let mut display = display_target::DisplayBuffer {
+        buf: &mut display_buffer.as_mut_slice(),
+        width: LCD_X_SIZE as i32,
+        height: LCD_Y_SIZE as i32,
+    };
+
+    // Create a Rectangle from the display's dimensions
+    let display_area = display.bounding_box();
+
+    // Disable the layer
+    LTDC.layer(0).cr().modify(|w| w.set_len(false));
+
+    // replace the buffer with the new one
+    LTDC.layer(0)
+        .cfbar()
+        .write(|w| w.set_cfbadd(&display.buf[0] as *const _ as u32));
+
+    // Configures the color frame buffer pitch in byte
+    LTDC.layer(0).cfblr().write(|w| {
+        w.set_cfbp(IMAGE_WIDTH * 4 as u16);
+        w.set_cfbll(((WINDOW_X1 - WINDOW_X0) * 4 as u16) + 3);
+    });
+
+    // Configures the frame buffer line number
+    LTDC.layer(0)
+        .cfblnr()
+        .write(|w| w.set_cfblnbr(IMAGE_HEIGHT));
+
+    // Use ARGB8888 pixel format
+    LTDC.layer(0).pfcr().write(|w| w.set_pf(Pf::ARGB8888));
+
+    // Enable the layer
+    LTDC.layer(0).cr().modify(|w| w.set_len(true));
+
+    // Immediately refresh the display
+    LTDC.srcr().modify(|w| w.set_imr(Imr::RELOAD));
+
+    let mut progress = 0;
     loop {
+        // Style objects
+        let text_style = MonoTextStyle::new(&FONT_10X20, Rgb888::BLUE);
+
+        let thin_stroke = PrimitiveStyle::with_stroke(Rgb888::RED, 1);
+        let thick_stroke = PrimitiveStyle::with_stroke(Rgb888::GREEN, 3);
+        let fill_on = PrimitiveStyle::with_fill(Rgb888::WHITE);
+        let fill_off = PrimitiveStyle::with_fill(Rgb888::BLACK);
+
+        // Primitives to be displayed
+        let triangle = Triangle::new(Point::new(0, 0), Point::new(12, 0), Point::new(6, 12))
+            .into_styled(thin_stroke);
+
+        let circle = Circle::new(Point::zero(), 11).into_styled(thick_stroke);
+        let circle2 = Circle::new(Point::zero(), 15).into_styled(fill_on);
+        let triangle2 = Triangle::new(Point::new(0, 0), Point::new(10, 0), Point::new(5, 8))
+            .into_styled(fill_off);
+        let text = Text::new("embedded-layout", Point::zero(), text_style);
+        let progress1 = ProgressBar::new(Point::zero(), Size::new(64, 8)).with_progress(progress);
+
+        // The layout
+        LinearLayout::vertical(
+            Chain::new(text)
+                .append(LinearLayout::horizontal(Chain::new(triangle).append(circle)).arrange())
+                .append(
+                    Chain::new(triangle2.align_to(&circle2, horizontal::Center, vertical::Top))
+                        .append(circle2),
+                )
+                .append(progress1),
+        )
+        .with_alignment(horizontal::Center)
+        .arrange()
+        .align_to(&display_area, horizontal::Center, vertical::Center)
+        .draw(&mut display)
+        .unwrap();
+
+        // Immediately refresh the display
+        // LTDC.srcr().modify(|w| w.set_imr(Imr::RELOAD));
+
+        progress += 1;
+
+        if progress == 100 {
+            progress = 0;
+        }
+
         Timer::after_millis(20).await;
     }
 }
@@ -163,158 +283,43 @@ async fn main(_spawner: Spawner) {
     let p = embassy_stm32::init(config);
     info!("Starting...");
 
-    let mut core_peri = cortex_m::Peripherals::take().unwrap();
     // Config SDRAM
     // ----------------------------------------------------------
-    // Configure MPU for external SDRAM
-    // MPU config for SDRAM write-through
-    let sdram_size = 32 * 1024 * 1024;
+    // Configure MPU for external SDRAM (64 Mbit = 8 Mbyte)
+    // MPU is disabled by default
+    const SDRAM_SIZE: usize = 8 * 1024 * 1024;
 
-    {
-        let mpu = core_peri.MPU;
-        let scb = &mut core_peri.SCB;
-        let size = sdram_size;
-        // Refer to ARM®v7-M Architecture Reference Manual ARM DDI 0403
-        // Version E.b Section B3.5
-        const MEMFAULTENA: u32 = 1 << 16;
-
-        unsafe {
-            /* Make sure outstanding transfers are done */
-            cortex_m::asm::dmb();
-
-            scb.shcsr.modify(|r| r & !MEMFAULTENA);
-
-            /* Disable the MPU and clear the control register*/
-            mpu.ctrl.write(0);
-        }
-
-        const REGION_NUMBER0: u32 = 0x00;
-        const REGION_BASE_ADDRESS: u32 = 0xD000_0000;
-
-        const REGION_FULL_ACCESS: u32 = 0x03;
-        const REGION_CACHEABLE: u32 = 0x01;
-        const REGION_WRITE_BACK: u32 = 0x01;
-        const REGION_ENABLE: u32 = 0x01;
-
-        crate::assert_eq!(size & (size - 1), 0, "SDRAM memory region size must be a power of 2");
-        crate::assert_eq!(size & 0x1F, 0, "SDRAM memory region size must be 32 bytes or more");
-        fn log2minus1(sz: u32) -> u32 {
-            for i in 5..=31 {
-                if sz == (1 << i) {
-                    return i - 1;
-                }
-            }
-            crate::panic!("Unknown SDRAM memory region size!");
-        }
-
-        //info!("SDRAM Memory Size 0x{:x}", log2minus1(size as u32));
-
-        // Configure region 0
-        //
-        // Cacheable, outer and inner write-back, no write allocate. So
-        // reads are cached, but writes always write all the way to SDRAM
-        unsafe {
-            mpu.rnr.write(REGION_NUMBER0);
-            mpu.rbar.write(REGION_BASE_ADDRESS);
-            mpu.rasr.write(
-                (REGION_FULL_ACCESS << 24)
-                    | (REGION_CACHEABLE << 17)
-                    | (REGION_WRITE_BACK << 16)
-                    | (log2minus1(size as u32) << 1)
-                    | REGION_ENABLE,
-            );
-        }
-
-        const MPU_ENABLE: u32 = 0x01;
-        const MPU_DEFAULT_MMAP_FOR_PRIVILEGED: u32 = 0x04;
-
-        // Enable
-        unsafe {
-            mpu.ctrl.modify(|r| r | MPU_DEFAULT_MMAP_FOR_PRIVILEGED | MPU_ENABLE);
-
-            scb.shcsr.modify(|r| r | MEMFAULTENA);
-
-            // Ensure MPU settings take effect
-            cortex_m::asm::dsb();
-            cortex_m::asm::isb();
-        }
-    }
-
+    #[rustfmt::skip]
     let mut sdram = Fmc::sdram_a12bits_d16bits_4banks_bank1(
         p.FMC,
         // A0-A11
-        p.PF0,
-        p.PF1,
-        p.PF2,
-        p.PF3,
-        p.PF4,
-        p.PF5,
-        p.PF12,
-        p.PF13,
-        p.PF14,
-        p.PF15,
-        p.PG0,
-        p.PG1,
+        p.PF0, p.PF1, p.PF2, p.PF3, p.PF4, p.PF5, p.PF12, p.PF13, p.PF14, p.PF15, p.PG0, p.PG1,
         // BA0-BA1
-        p.PG4,
-        p.PG5,
-        // D0-D31
-        p.PD14,
-        p.PD15,
-        p.PD0,
-        p.PD1,
-        p.PE7,
-        p.PE8,
-        p.PE9,
-        p.PE10,
-        p.PE11,
-        p.PE12,
-        p.PE13,
-        p.PE14,
-        p.PE15,
-        p.PD8,
-        p.PD9,
-        p.PD10,
-        // NBL0 - NBL3
-        p.PE0,
-        p.PE1,
-        p.PC3,  // SDCKE1
+        p.PG4, p.PG5,
+        // D0-D15
+        p.PD14, p.PD15, p.PD0, p.PD1, p.PE7, p.PE8, p.PE9, p.PE10, p.PE11, p.PE12, p.PE13, p.PE14, p.PE15, p.PD8, p.PD9, p.PD10,
+        // NBL0 - NBL1
+        p.PE0, p.PE1,
+        p.PC3,  // SDCKE0
         p.PG8,  // SDCLK
         p.PG15, // SDNCAS
         p.PH3,  // SDNE0 (!CS)
         p.PF11, // SDRAS
         p.PH5,  // SDNWE
-        stm32_fmc::devices::mt48lc4m32b2_6::Mt48lc4m32b2 {},
+        sdram_drv::mt48lc4m32b2_6::Mt48lc4m32b2 {},
     );
 
     let mut delay = embassy_time::Delay;
 
-    let ram_slice = unsafe {
+    unsafe {
         // Initialise controller and SDRAM
         let ram_ptr: *mut u32 = sdram.init(&mut delay) as *mut _;
 
+        info!("SDRAM Initialized at {:x}", ram_ptr as usize);
+
         // Convert raw pointer to slice
-        core::slice::from_raw_parts_mut(ram_ptr, sdram_size / core::mem::size_of::<u32>())
+        HEAP.init(ram_ptr as usize, SDRAM_SIZE)
     };
-    
-    // // ----------------------------------------------------------
-    // // Use memory in SDRAM
-    info!("RAM contents before writing: {:x}", ram_slice[..10]);
-
-    ram_slice[0] = 1;
-    ram_slice[1] = 2;
-    ram_slice[2] = 3;
-    ram_slice[3] = 4;
-
-    info!("RAM contents after writing: {:x}", ram_slice[..10]);
-
-    crate::assert_eq!(ram_slice[0], 1);
-    crate::assert_eq!(ram_slice[1], 2);
-    crate::assert_eq!(ram_slice[2], 3);
-    crate::assert_eq!(ram_slice[3], 4);
-
-    info!("Assertions succeeded.");
-
 
     // Configure the LTDC Pins
     const DATA_AF: AfType = AfType::output(OutputType::PushPull, Speed::Low);
@@ -515,11 +520,9 @@ async fn main(_spawner: Spawner) {
     let mut led = Output::new(p.PI1, Level::High, Speed::Low);
 
     loop {
-        info!("high");
         led.set_high();
         Timer::after_millis(1000).await;
 
-        info!("low");
         led.set_low();
         Timer::after_millis(1000).await;
     }

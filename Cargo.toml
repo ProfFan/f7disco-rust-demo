@@ -51,6 +51,9 @@ embedded-hal = "1.0.0"
 panic-probe = { version = "0.3", features = ["print-defmt"] }
 critical-section = "1.1.2"
 stm32-fmc = "0.3.0"
+embedded-graphics = "0.8"
+embedded-alloc = { version = "0.5.1", git = "https://github.com/rust-embedded/embedded-alloc", branch = "master" }
+embedded-layout = "0.4"
 
 [profile.release]
 debug = 2
