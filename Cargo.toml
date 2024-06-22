@@ -54,6 +54,7 @@ stm32-fmc = "0.3.0"
 embedded-graphics = "0.8"
 embedded-alloc = { version = "0.5.1", git = "https://github.com/rust-embedded/embedded-alloc", branch = "master" }
 embedded-layout = "0.4"
+kolibri-embedded-gui = { git = "https://github.com/Yandrik/kolibri", branch = "main" }
 
 [profile.release]
 debug = 2

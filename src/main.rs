@@ -28,14 +28,19 @@ static HEAP: Heap = Heap::empty();
 
 use embedded_graphics::geometry::{Dimensions, Point, Size};
 use embedded_graphics::mono_font::iso_8859_14::FONT_10X20;
-use embedded_graphics::mono_font::MonoTextStyle;
-use embedded_graphics::pixelcolor::{Rgb888, RgbColor};
+use embedded_graphics::mono_font::{self, ascii, MonoTextStyle};
+use embedded_graphics::pixelcolor::{Rgb888, RgbColor, WebColors};
 use embedded_graphics::primitives::{Circle, Primitive, PrimitiveStyle, Triangle};
 use embedded_graphics::text::Text;
 use embedded_graphics::Drawable;
 use embedded_layout::align::{horizontal, vertical, Align};
 use embedded_layout::layout::linear::LinearLayout;
 use embedded_layout::object_chain::Chain;
+use kolibri_embedded_gui::button::Button;
+use kolibri_embedded_gui::checkbox::Checkbox;
+use kolibri_embedded_gui::label::Label;
+use kolibri_embedded_gui::style::medsize_rgb565_style;
+use kolibri_embedded_gui::ui::Ui;
 use progress_bar::ProgressBar;
 
 use {defmt_rtt as _, panic_probe as _};
@@ -105,16 +110,16 @@ async fn display_task() -> ! {
 
     // Allocate a buffer for the display on the heap
     const DISPLAY_BUFFER_SIZE: usize = LCD_X_SIZE as usize * LCD_Y_SIZE as usize;
-    let mut display_buffer = Box::<[u32; DISPLAY_BUFFER_SIZE]>::new([0; DISPLAY_BUFFER_SIZE]);
-
+    let mut display_buffer_1 = Box::<[u32; DISPLAY_BUFFER_SIZE]>::new([0; DISPLAY_BUFFER_SIZE]);
+    let mut display_buffer_2 = Box::<[u32; DISPLAY_BUFFER_SIZE]>::new([0; DISPLAY_BUFFER_SIZE]);
     info!(
-        "Display buffer allocated at {:x}",
-        &display_buffer[0] as *const _
+        "Display buffer allocated at {:x}, {:x}",
+        &display_buffer_1[0] as *const _, &display_buffer_2[0] as *const _
     );
 
     LTDC.layer(0)
         .cfbar()
-        .write(|w| w.set_cfbadd(&display_buffer[0] as *const _ as u32));
+        .write(|w| w.set_cfbadd(&display_buffer_1[0] as *const _ as u32));
 
     // Configures the color frame buffer pitch in byte
     LTDC.layer(0).cfblr().write(|w| {
@@ -147,14 +152,19 @@ async fn display_task() -> ! {
     info!("Boxed value: {:x}", *boxed_int);
 
     // Create a display buffer
-    let mut display = display_target::DisplayBuffer {
-        buf: &mut display_buffer.as_mut_slice(),
+    let mut display_fb1 = display_target::DisplayBuffer {
+        buf: &mut display_buffer_1.as_mut_slice(),
         width: LCD_X_SIZE as i32,
         height: LCD_Y_SIZE as i32,
     };
 
-    // Create a Rectangle from the display's dimensions
-    let display_area = display.bounding_box();
+    let mut display_fb2 = display_target::DisplayBuffer {
+        buf: &mut display_buffer_2.as_mut_slice(),
+        width: LCD_X_SIZE as i32,
+        height: LCD_Y_SIZE as i32,
+    };
+
+    let mut display = &mut display_fb1;
 
     // Disable the layer
     LTDC.layer(0).cr().modify(|w| w.set_len(false));
@@ -184,51 +194,76 @@ async fn display_task() -> ! {
     // Immediately refresh the display
     LTDC.srcr().modify(|w| w.set_imr(Imr::RELOAD));
 
-    let mut progress = 0;
+    pub fn medsize_rgb888_style() -> kolibri_embedded_gui::style::Style<Rgb888> {
+        kolibri_embedded_gui::style::Style {
+            background_color: Rgb888::new(0x40, 0x80, 0x40), // pretty dark gray
+            item_background_color: Rgb888::new(0x20, 0x40, 0x20), // darker gray
+            highlight_item_background_color: Rgb888::new(0x10, 0x20, 0x10),
+            border_color: Rgb888::WHITE,
+            highlight_border_color: Rgb888::WHITE,
+            primary_color: Rgb888::CSS_DARK_CYAN,
+            secondary_color: Rgb888::YELLOW,
+            icon_color: Rgb888::WHITE,
+            text_color: Rgb888::WHITE,
+            default_widget_height: 16,
+            border_width: 0,
+            highlight_border_width: 1,
+            default_font: mono_font::iso_8859_10::FONT_9X15,
+            spacing: kolibri_embedded_gui::style::Spacing {
+                item_spacing: Size::new(8, 4),
+                button_padding: Size::new(5, 5),
+                default_padding: Size::new(1, 1),
+                window_border_padding: Size::new(3, 3),
+            },
+        }
+    }
+
+    let mut i: i32 = 0;
+    let mut active_buffer = 0;
     loop {
-        // Style objects
-        let text_style = MonoTextStyle::new(&FONT_10X20, Rgb888::BLUE);
+        // Switch buffers
+        if active_buffer == 0 {
+            display = &mut display_fb1;
+            active_buffer = 1;
+        } else {
+            display = &mut display_fb2;
+            active_buffer = 0;
+        }
 
-        let thin_stroke = PrimitiveStyle::with_stroke(Rgb888::RED, 1);
-        let thick_stroke = PrimitiveStyle::with_stroke(Rgb888::GREEN, 3);
-        let fill_on = PrimitiveStyle::with_fill(Rgb888::WHITE);
-        let fill_off = PrimitiveStyle::with_fill(Rgb888::BLACK);
+        // create UI (needs to be done each frame)
+        let mut ui = Ui::new_fullscreen(display, medsize_rgb888_style());
 
-        // Primitives to be displayed
-        let triangle = Triangle::new(Point::new(0, 0), Point::new(12, 0), Point::new(6, 12))
-            .into_styled(thin_stroke);
+        // clear UI background (for non-incremental redrawing framebuffered applications)
+        ui.clear_background().ok();
 
-        let circle = Circle::new(Point::zero(), 11).into_styled(thick_stroke);
-        let circle2 = Circle::new(Point::zero(), 15).into_styled(fill_on);
-        let triangle2 = Triangle::new(Point::new(0, 0), Point::new(10, 0), Point::new(5, 8))
-            .into_styled(fill_off);
-        let text = Text::new("embedded-layout", Point::zero(), text_style);
-        let progress1 = ProgressBar::new(Point::zero(), Size::new(64, 8)).with_progress(progress);
+        // === ACTUAL UI CODE STARTS HERE ===
 
-        // The layout
-        LinearLayout::vertical(
-            Chain::new(text)
-                .append(LinearLayout::horizontal(Chain::new(triangle).append(circle)).arrange())
-                .append(
-                    Chain::new(triangle2.align_to(&circle2, horizontal::Center, vertical::Top))
-                        .append(circle2),
-                )
-                .append(progress1),
-        )
-        .with_alignment(horizontal::Center)
-        .arrange()
-        .align_to(&display_area, horizontal::Center, vertical::Center)
-        .draw(&mut display)
-        .unwrap();
+        ui.add(Label::new("Basic Example").with_font(ascii::FONT_10X20));
+
+        ui.add(Label::new("Basic Counter (7LOC)"));
+
+        i += 1;
+
+        if ui.add_horizontal(Button::new("-")).clicked() {
+            i = i.saturating_sub(1);
+        }
+        ui.add_horizontal(Label::new(alloc::format!("Clicked {} times", i).as_ref()));
+        if ui.add_horizontal(Button::new("+")).clicked() {
+            i = i.saturating_add(1);
+        }
+
+        ui.new_row();
+
+        let mut checked = true;
+        ui.add(Checkbox::new(&mut checked));
+
+        // replace the buffer with the new one
+        LTDC.layer(0)
+            .cfbar()
+            .write(|w| w.set_cfbadd(&display.buf[0] as *const _ as u32));
 
         // Immediately refresh the display
-        // LTDC.srcr().modify(|w| w.set_imr(Imr::RELOAD));
-
-        progress += 1;
-
-        if progress == 100 {
-            progress = 0;
-        }
+        LTDC.srcr().modify(|w| w.set_imr(Imr::RELOAD));
 
         Timer::after_millis(20).await;
     }
