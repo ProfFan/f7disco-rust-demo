@@ -26,22 +26,13 @@ use embedded_alloc::TlsfHeap as Heap;
 #[global_allocator]
 static HEAP: Heap = Heap::empty();
 
-use embedded_graphics::geometry::{Dimensions, Point, Size};
-use embedded_graphics::mono_font::iso_8859_14::FONT_10X20;
-use embedded_graphics::mono_font::{self, ascii, MonoTextStyle};
+use embedded_graphics::geometry::Size;
+use embedded_graphics::mono_font::{self, ascii};
 use embedded_graphics::pixelcolor::{Rgb888, RgbColor, WebColors};
-use embedded_graphics::primitives::{Circle, Primitive, PrimitiveStyle, Triangle};
-use embedded_graphics::text::Text;
-use embedded_graphics::Drawable;
-use embedded_layout::align::{horizontal, vertical, Align};
-use embedded_layout::layout::linear::LinearLayout;
-use embedded_layout::object_chain::Chain;
 use kolibri_embedded_gui::button::Button;
 use kolibri_embedded_gui::checkbox::Checkbox;
 use kolibri_embedded_gui::label::Label;
-use kolibri_embedded_gui::style::medsize_rgb565_style;
 use kolibri_embedded_gui::ui::Ui;
-use progress_bar::ProgressBar;
 
 use {defmt_rtt as _, panic_probe as _};
 
@@ -208,6 +199,7 @@ async fn display_task() -> ! {
             default_widget_height: 16,
             border_width: 0,
             highlight_border_width: 1,
+            corner_radius: 0,
             default_font: mono_font::iso_8859_10::FONT_9X15,
             spacing: kolibri_embedded_gui::style::Spacing {
                 item_spacing: Size::new(8, 4),
@@ -442,7 +434,9 @@ async fn main(_spawner: Spawner) {
     let mut ltdc_b3 = Flex::new(p.PJ15);
     ltdc_b3.set_as_af_unchecked(ltdc_b3_af, DATA_AF);
 
-    let ltdc_b4_af = B4Pin::af_num(&p.PG12);
+    let ltdc_b4_af = <embassy_stm32::peripherals::PG12 as B4Pin<
+        embassy_stm32::peripherals::LTDC,
+    >>::af_num(&p.PG12);
     let mut ltdc_b4 = Flex::new(p.PG12);
     ltdc_b4.set_as_af_unchecked(ltdc_b4_af, DATA_AF);
 
@@ -501,10 +495,10 @@ async fn main(_spawner: Spawner) {
 
     // Set the LTDC to 480x272
     LTDC.gcr().modify(|w| {
-        w.set_hspol(embassy_stm32::pac::ltdc::vals::Hspol::ACTIVELOW);
-        w.set_vspol(embassy_stm32::pac::ltdc::vals::Vspol::ACTIVELOW);
-        w.set_depol(embassy_stm32::pac::ltdc::vals::Depol::ACTIVELOW);
-        w.set_pcpol(embassy_stm32::pac::ltdc::vals::Pcpol::RISINGEDGE);
+        w.set_hspol(embassy_stm32::pac::ltdc::vals::Hspol::ACTIVE_LOW);
+        w.set_vspol(embassy_stm32::pac::ltdc::vals::Vspol::ACTIVE_LOW);
+        w.set_depol(embassy_stm32::pac::ltdc::vals::Depol::ACTIVE_LOW);
+        w.set_pcpol(embassy_stm32::pac::ltdc::vals::Pcpol::RISING_EDGE);
     });
 
     // Set Sync signals
@@ -548,7 +542,7 @@ async fn main(_spawner: Spawner) {
     ltdc.enable();
 
     // Start the display task
-    let spawner = Spawner::for_current_executor().await;
+    let spawner = unsafe { Spawner::for_current_executor().await };
 
     spawner.spawn(display_task()).unwrap();
 
