@@ -4,34 +4,43 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-embassy-stm32 = { version = "0.4.0", features = [
+embassy-stm32 = { path = "../embassy/embassy-stm32", version = "0.4.0", features = [
     "defmt",
     "stm32f746ng",
     "memory-x",
     "unstable-pac",
-    "time-driver-any",
+    "time-driver-tim5",
     "exti",
+    "time",
 ] }
-embassy-sync = { version = "0.7.2", features = ["defmt"] }
-embassy-executor = { version = "0.9.1", features = [
+embassy-sync = { path = "../embassy/embassy-sync", version = "0.7.2", features = [
+    "defmt",
+] }
+embassy-executor = { path = "../embassy/embassy-executor", version = "0.9.1", features = [
     "arch-cortex-m",
     "executor-thread",
     "defmt",
 ] }
-embassy-time = { version = "0.5.0", features = [
+embassy-time = { path = "../embassy/embassy-time", version = "0.5.0", features = [
     "defmt",
     "defmt-timestamp-uptime",
     "tick-hz-32_768",
 ] }
-embassy-net = { version = "0.7.1", features = [
+embassy-net = { path = "../embassy/embassy-net", version = "0.7.1", features = [
     "defmt",
     "tcp",
     "dhcpv4",
     "medium-ethernet",
 ] }
+embassy-usb = { path = "../embassy/embassy-usb", version = "0.5.1", features = [
+    "defmt",
+] }
+embassy-futures = { path = "../embassy/embassy-futures", version = "0.1.2" }
+embassy-embedded-hal = { path = "../embassy/embassy-embedded-hal", version = "0.5.0", features = [
+    "defmt",
+] }
 embedded-io-async = { version = "0.7.0" }
-embassy-usb = { version = "0.5.1", features = ["defmt"] }
-embassy-futures = { version = "0.1.2" }
+embedded-hal-async = { version = "1.0.0" }
 
 defmt = "1.0.1"
 defmt-rtt = "1.0.0"
@@ -49,7 +58,8 @@ embedded-graphics = "0.8"
 embedded-alloc = { version = "0.6.0" }
 embedded-layout = "0.4"
 kolibri-embedded-gui = { git = "https://github.com/Yandrik/kolibri", branch = "main" }
+ft5336 = "0.2.0"
 
 [profile.release]
 debug = 2
-lto = "thin"
+lto = "fat"

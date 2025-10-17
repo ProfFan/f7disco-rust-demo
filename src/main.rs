@@ -8,15 +8,16 @@ mod sdram_drv;
 use alloc::boxed::Box;
 use defmt::*;
 use embassy_executor::Spawner;
+use embassy_stm32::bind_interrupts;
 use embassy_stm32::fmc::Fmc;
 use embassy_stm32::gpio::{AfType, Flex, Level, Output, OutputType, Speed};
+use embassy_stm32::i2c::I2c;
 use embassy_stm32::ltdc::{
     B0Pin, B1Pin, B2Pin, B3Pin, B4Pin, B5Pin, B6Pin, B7Pin, ClkPin, DePin, G0Pin, G1Pin, G2Pin,
-    G3Pin, G4Pin, G5Pin, G6Pin, G7Pin, HsyncPin, Ltdc, R0Pin, R1Pin, R2Pin, R3Pin, R4Pin, R5Pin,
-    R6Pin, R7Pin, VsyncPin,
+    G3Pin, G4Pin, G5Pin, G6Pin, G7Pin, HsyncPin, Ltdc, LtdcConfiguration, PolarityActive,
+    PolarityEdge, R0Pin, R1Pin, R2Pin, R3Pin, R4Pin, R5Pin, R6Pin, R7Pin, VsyncPin,
 };
 use embassy_stm32::pac::ltdc::vals::{Bf1, Bf2, Imr, Pf};
-use embassy_stm32::pac::RCC;
 use embassy_stm32::time::mhz;
 use embassy_time::Timer;
 
@@ -261,6 +262,11 @@ async fn display_task() -> ! {
     }
 }
 
+bind_interrupts!(struct Irqs {
+    I2C3_EV => embassy_stm32::i2c::EventInterruptHandler<embassy_stm32::peripherals::I2C3>;
+    I2C3_ER => embassy_stm32::i2c::ErrorInterruptHandler<embassy_stm32::peripherals::I2C3>;
+});
+
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
     use embassy_stm32::rcc::{
@@ -308,6 +314,11 @@ async fn main(_spawner: Spawner) {
     });
 
     let p = embassy_stm32::init(config);
+
+    // This is very important, I2C won't work without it
+    // Not sure why, the RM doesn't say anything about this
+    embassy_time::Timer::after(embassy_time::Duration::from_millis(40)).await;
+
     info!("Starting...");
 
     // Config SDRAM
@@ -480,79 +491,111 @@ async fn main(_spawner: Spawner) {
 
     let mut ltdc = Ltdc::new(p.LTDC);
 
-    critical_section::with(|_cs| {
-        // RM says the pllsaidivr should only be changed when pllsai is off. But this could have other unintended side effects. So let's just give it a try like this.
-        // According to the debugger, this bit gets set, anyway.
-        RCC.dckcfgr1()
-            .modify(|w| w.set_pllsaidivr(embassy_stm32::pac::rcc::vals::Pllsaidivr::DIV8));
-    });
+    let ltdc_config = LtdcConfiguration {
+        active_width: 533,
+        active_height: 283,
+        h_back_porch: 53,
+        h_front_porch: 0,
+        v_back_porch: 11,
+        v_front_porch: 0,
+        h_sync: 41,
+        v_sync: 10,
+        h_sync_polarity: PolarityActive::ActiveLow,
+        v_sync_polarity: PolarityActive::ActiveLow,
+        data_enable_polarity: PolarityActive::ActiveLow,
+        pixel_clock_polarity: PolarityEdge::RisingEdge,
+    };
+    ltdc.init(&ltdc_config);
 
-    embassy_stm32::rcc::enable_and_reset::<embassy_stm32::peripherals::LTDC>();
+    let mut i2c_config = embassy_stm32::i2c::Config::default();
+    i2c_config.frequency = embassy_stm32::time::Hertz(400_000);
+    i2c_config.gpio_speed = Speed::Low;
+    i2c_config.scl_pullup = false;
+    i2c_config.sda_pullup = false;
+    i2c_config.timeout = embassy_time::Duration::from_millis(1000);
 
-    ltdc.disable();
+    let mut i2c = I2c::new_blocking(p.I2C3, p.PH7, p.PH8, i2c_config);
+    // Scan for devices
+    {
+        info!("Scanning I2C bus...");
+        let mut found = 0;
+        for addr in [0x38, 0x1a] {
+            match i2c.blocking_write(addr, &[]) {
+                Ok(()) => {
+                    info!("Found device at address {:x}", addr);
+                    found += 1;
+                }
+                Err(_e) => {}
+            }
+        }
+        info!("Found {} devices", found);
+    }
 
-    use embassy_stm32::pac::LTDC;
+    {
+        let mut buf: [u8; 1] = [0];
+        // Read the ID register of the FT5336
+        // Addr: 0xA8
+        match i2c.blocking_read(0x38, &mut buf) {
+            Ok(_) => info!("FT5336: read default {:x}", buf[0]),
+            Err(e) => info!("FT5336: error reading default {:?}", e),
+        }
+        match i2c.blocking_read(0x38, &mut buf) {
+            Ok(_) => info!("FT5336: read default 2 {:x}", buf[0]),
+            Err(e) => info!("FT5336: error reading default {:?}", e),
+        }
+        match i2c.blocking_write(0x38, &[0xA8]) {
+            Ok(()) => info!("FT5336: wrote register address"),
+            Err(e) => info!("FT5336: error writing register address: {:?}", e),
+        }
+        let id = match i2c.blocking_write_read(0x38, &[0xA8], &mut buf) {
+            Ok(()) => Ok(buf[0]),
+            Err(e) => Err(e),
+        };
+        info!("Touch controller ID: {:#x}", id);
+    }
 
-    // Set the LTDC to 480x272
-    LTDC.gcr().modify(|w| {
-        w.set_hspol(embassy_stm32::pac::ltdc::vals::Hspol::ACTIVE_LOW);
-        w.set_vspol(embassy_stm32::pac::ltdc::vals::Vspol::ACTIVE_LOW);
-        w.set_depol(embassy_stm32::pac::ltdc::vals::Depol::ACTIVE_LOW);
-        w.set_pcpol(embassy_stm32::pac::ltdc::vals::Pcpol::RISING_EDGE);
-    });
+    let mut touch = ft5336::Ft5336::new(&i2c, 0x38, &mut delay).unwrap();
+    touch.init(&mut i2c);
 
-    // Set Sync signals
-    LTDC.sscr().write(|w| {
-        w.set_hsw(41);
-        w.set_vsh(10);
-    });
+    // let dev_mode_result = touch.dev_mode(&mut i2c, 1);
+    // info!("Set dev mode result: {:?}", dev_mode_result);
 
-    // Set Accumulated Back porch
-    LTDC.bpcr().modify(|w| {
-        w.set_ahbp(53);
-        w.set_avbp(11);
-    });
-
-    // Set Accumulated Active Width
-    LTDC.awcr().modify(|w| {
-        w.set_aah(283);
-        w.set_aaw(533);
-    });
-
-    // Set Total Width
-    LTDC.twcr().modify(|w| {
-        w.set_totalh(285);
-        w.set_totalw(565);
-    });
-
-    // Set the background color value
-    LTDC.bccr().modify(|w| {
-        w.set_bcred(0);
-        w.set_bcgreen(0);
-        w.set_bcblue(0)
-    });
-
-    // Enable the Transfer Error and FIFO underrun interrupts
-    LTDC.ier().modify(|w| {
-        w.set_terrie(true);
-        w.set_fuie(true);
-    });
-
-    // Enable the LTDC
-    ltdc.enable();
+    info!(
+        "Touch controller initialized, chip id: {:x}",
+        touch.chip_id(&mut i2c)
+    );
 
     // Start the display task
     let spawner = unsafe { Spawner::for_current_executor().await };
 
-    spawner.spawn(display_task()).unwrap();
+    spawner.spawn(display_task().unwrap());
 
     let mut led = Output::new(p.PI1, Level::High, Speed::Low);
 
     loop {
         led.set_high();
-        Timer::after_millis(1000).await;
+        Timer::after_millis(50).await;
 
         led.set_low();
-        Timer::after_millis(1000).await;
+        Timer::after_millis(50).await;
+
+        let touch_det = touch.detect_touch(&mut i2c);
+        match touch_det {
+            Ok(count) => {
+                for i in 0..count {
+                    match touch.get_touch(&mut i2c, i + 1) {
+                        Ok(touch_data) => {
+                            info!("Touch detected: {:?}", defmt::Debug2Format(&touch_data));
+                        }
+                        Err(e) => {
+                            info!("Error getting touch data: {:?}", e);
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                info!("Error detecting touch: {:?}", e);
+            }
+        }
     }
 }
