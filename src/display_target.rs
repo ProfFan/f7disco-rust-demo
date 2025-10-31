@@ -5,9 +5,8 @@ pub struct DisplayBuffer<'a> {
 }
 
 use embedded_graphics::{
-    geometry,
+    Pixel, geometry,
     pixelcolor::{IntoStorage, Rgb888},
-    Pixel,
 };
 
 // Implement DrawTarget for

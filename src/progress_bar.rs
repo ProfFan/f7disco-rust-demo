@@ -1,13 +1,13 @@
 use embedded_graphics::{
+    Drawable,
     draw_target::DrawTarget,
     pixelcolor::{Rgb888, RgbColor},
     prelude::{Point, Primitive, Size},
     primitives::{PrimitiveStyle, Rectangle},
-    Drawable,
 };
 use embedded_layout::{
-    align::{horizontal, vertical, Align},
     View,
+    align::{Align, horizontal, vertical},
 };
 
 pub struct ProgressBar {
