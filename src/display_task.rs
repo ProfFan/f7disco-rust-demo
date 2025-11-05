@@ -46,6 +46,34 @@ pub fn medsize_rgb888_style() -> kolibri_embedded_gui::style::Style<Rgb888> {
     }
 }
 
+/// Pink theme for RGB888 displays.
+///
+/// Features a peach background with pink accents and black text.
+pub fn medsize_sakura_rgb888_style() -> kolibri_embedded_gui::style::Style<Rgb888> {
+    kolibri_embedded_gui::style::Style {
+        background_color: Rgb888::CSS_PEACH_PUFF,
+        item_background_color: Rgb888::CSS_LIGHT_PINK,
+        highlight_item_background_color: Rgb888::CSS_HOT_PINK,
+        border_color: Rgb888::CSS_WHITE,
+        highlight_border_color: Rgb888::CSS_BLACK,
+        primary_color: Rgb888::CSS_DEEP_PINK,
+        secondary_color: Rgb888::YELLOW,
+        icon_color: Rgb888::CSS_BLACK,
+        text_color: Rgb888::CSS_BLACK,
+        default_widget_height: 16,
+        border_width: 0,
+        highlight_border_width: 1,
+        default_font: mono_font::ascii::FONT_9X15,
+        spacing: kolibri_embedded_gui::style::Spacing {
+            item_spacing: Size::new(8, 4),
+            button_padding: Size::new(6, 5),
+            default_padding: Size::new(1, 1),
+            window_border_padding: Size::new(3, 3),
+        },
+        corner_radius: 8,
+    }
+}
+
 use embassy_stm32::pac::LTDC;
 const DISPLAY_BUFFER_SIZE: usize = LCD_X_SIZE as usize * LCD_Y_SIZE as usize;
 
@@ -190,8 +218,10 @@ pub async fn display_task() -> ! {
 
     let display_fb = [&mut display_fb1, &mut display_fb2];
 
+    let theme = medsize_sakura_rgb888_style();
+
     for active_buffer in 0..2 {
-        let mut ui = Ui::new_fullscreen(display_fb[active_buffer], medsize_rgb888_style());
+        let mut ui = Ui::new_fullscreen(display_fb[active_buffer], theme);
         ui.clear_background().unwrap();
     }
 
@@ -219,7 +249,7 @@ pub async fn display_task() -> ! {
         }
 
         // create UI (needs to be done each frame)
-        let mut ui = Ui::new_fullscreen(display_fb[active_buffer], medsize_rgb888_style());
+        let mut ui = Ui::new_fullscreen(display_fb[active_buffer], theme);
 
         let (smp1, smp2) = smp.split_at_mut(1);
         let (cur_smp, other_smp) = if active_buffer == 0 {
@@ -261,7 +291,9 @@ pub async fn display_task() -> ! {
         ui.add(Label::new("Basic Counter (7LOC)").smartstate(cur_smp.nxt()));
 
         if ui
-            .add_horizontal(Button::new("-").smartstate(cur_smp.nxt()))
+            .add_horizontal(
+                IconButton::new(size24px::navigation::ArrowDown).smartstate(cur_smp.nxt()),
+            )
             .clicked()
         {
             debug!("Decrementing counter");
@@ -274,7 +306,9 @@ pub async fn display_task() -> ! {
             Label::new(alloc::format!("Clicked {} times", i).as_ref()).smartstate(cur_smp.nxt()),
         );
         if ui
-            .add_horizontal(Button::new("+").smartstate(cur_smp.nxt()))
+            .add_horizontal(
+                IconButton::new(size24px::navigation::ArrowUp).smartstate(cur_smp.nxt()),
+            )
             .clicked()
         {
             debug!("Incrementing counter");
